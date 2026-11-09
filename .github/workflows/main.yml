@@ -1,4 +1,4 @@
-name: win 11 playit rdp
+name: win 11 ngrok rdp
 
 on:
   workflow_dispatch:
@@ -25,72 +25,61 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Download playit.gg Agent
+      - name: Install and Start ngrok Tunnel
         shell: powershell
         run: |
-          $playitDir = "C:\playit"
-          New-Item -ItemType Directory -Path $playitDir -Force | Out-Null
-          $playitExe = "$playitDir\playit.exe"
-
-          Write-Host "Downloading playit.gg agent..."
-          Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe" -OutFile $playitExe -UseBasicParsing
-
-          if (-not (Test-Path $playitExe)) {
-              Write-Error "Download failed."
-              exit 1
-          }
-          Write-Host "Download complete: $playitExe"
-
-      - name: Start playit.gg Agent and Capture Claim URL
-        shell: powershell
-        run: |
-          $playitDir = "C:\playit"
-          $playitExe = "$playitDir\playit.exe"
-          $logFile = "$playitDir\playit_output.log"
-          $errFile = "$playitDir\playit_err.log"
-
-          if (-not (Test-Path $playitExe)) {
-              Write-Error "playit.exe not found. Download step failed."
-              exit 1
+          Write-Host "Installing ngrok via Chocolatey..."
+          choco install ngrok --no-progress -y
+          
+          $ngrokPath = "C:\ProgramData\chocolatey\bin\ngrok.exe"
+          if (-not (Test-Path $ngrokPath)) {
+              $ngrokPath = "ngrok"
           }
 
-          if (Test-Path $logFile) { Remove-Item $logFile -Force }
-          if (Test-Path $errFile) { Remove-Item $errFile -Force }
-
-          Write-Host "Starting playit agent in foreground (stdout mode)..."
-          $proc = Start-Process -FilePath $playitExe -ArgumentList "--stdout" -WorkingDirectory $playitDir -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru
-
-          $claimUrl = $null
-          for ($i = 0; $i -lt 12; $i++) {
+          Write-Host "Authenticating ngrok..."
+          & $ngrokPath config add-authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
+          
+          Write-Host "Starting TCP Tunnel..."
+          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
+          
+          $maxRetries = 12
+          $retryCount = 0
+          $publicUrl = $null
+          while ($retryCount -lt $maxRetries -and -not $publicUrl) {
               Start-Sleep -Seconds 5
-              if (Test-Path $logFile) {
-                  $content = Get-Content $logFile -Raw
-                  if ($content -match "https://playit\.gg/claim/[A-Za-z0-9]+") {
-                      $claimUrl = $Matches[0]
-                      break
+              try {
+                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
+                  if ($response.tunnels.Count -gt 0) {
+                      $publicUrl = $response.tunnels[0].public_url
                   }
+              } catch {
+                  Write-Host "API not ready yet, retrying... ($($retryCount + 1)/$maxRetries)"
               }
-              Write-Host "Waiting for claim URL... ($($i+1)/12)"
+              $retryCount++
           }
 
-          if ($claimUrl) {
+          if (-not $publicUrl) {
+              Write-Error "Could not reach ngrok API within 60 seconds. Tunnel may not have started."
+              exit 1
+          }
+
+          if ($publicUrl -match "tcp://(.+)") {
+              $rdpAddress = $Matches[1]
+              
               Write-Host "`n==============================================="
-              Write-Host "PLAYIT.GG CLAIM URL:"
-              Write-Host $claimUrl
+              Write-Host "🚀 RDP CONNECTION INFO"
+              Write-Host "Address (Computer): $rdpAddress"
+              Write-Host "Username: RDP"
+              Write-Host "Password: TechZoner@001"
               Write-Host "===============================================`n"
-              Write-Host "Open the URL above, claim the agent, create a TCP tunnel for port 3389,"
-              Write-Host "and use the given host:port in Remote Desktop."
           } else {
-              Write-Warning "Claim URL not found in log within 60 seconds."
-              Write-Host "--- Last 30 lines of playit output ---"
-              if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
-              if (Test-Path $errFile) { Get-Content $errFile -Tail 30 }
-              Write-Host "The agent may still be starting. Check the log file manually: $logFile"
+              Write-Error "Unexpected tunnel URL format: $publicUrl"
+              exit 1
           }
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via playit.gg..."
+              Write-Host "[$(Get-Date)] RDP Active via ngrok..."
               Start-Sleep -Seconds 300
           }
