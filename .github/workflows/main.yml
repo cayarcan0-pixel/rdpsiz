@@ -25,40 +25,67 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Download and Start playit.gg Agent
+      - name: Download playit.gg Agent
         shell: powershell
         run: |
           $playitDir = "C:\playit"
           New-Item -ItemType Directory -Path $playitDir -Force | Out-Null
           $playitExe = "$playitDir\playit.exe"
-          
+
           Write-Host "Downloading playit.gg agent..."
           Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-windows-x86_64.exe" -OutFile $playitExe -UseBasicParsing
-          
-          Write-Host "Starting playit agent..."
-          Start-Process -FilePath $playitExe -WorkingDirectory $playitDir -WindowStyle Hidden
-          
-          Start-Sleep -Seconds 10
-          
-          Write-Host "`n==============================================="
-          Write-Host "PLAYIT.GG CLAIM INSTRUCTIONS"
-          Write-Host "1. Look for a claim URL in the log below (or check the playit.exe console window)."
-          Write-Host "2. Open that URL, log in / sign up, and claim this agent."
-          Write-Host "3. In the playit dashboard, create a TCP tunnel for port 3389."
-          Write-Host "4. Copy the public IP:PORT (e.g., 1.tcp.eu.playit.gg:12345) and use it in RDP."
-          Write-Host "===============================================`n"
-          
-          # Ajanın loglarını görünür kılmak için birkaç saniye bekle ve dosyaları kontrol et
-          Start-Sleep -Seconds 5
-          $logFiles = Get-ChildItem -Path $playitDir -Filter "*.log" -ErrorAction SilentlyContinue
-          if ($logFiles) {
-              foreach ($log in $logFiles) {
-                  Write-Host "--- $($log.Name) ---"
-                  Get-Content $log.FullName -Tail 50
+
+          if (-not (Test-Path $playitExe)) {
+              Write-Error "Download failed."
+              exit 1
+          }
+          Write-Host "Download complete: $playitExe"
+
+      - name: Start playit.gg Agent and Capture Claim URL
+        shell: powershell
+        run: |
+          $playitDir = "C:\playit"
+          $playitExe = "$playitDir\playit.exe"
+          $logFile = "$playitDir\playit_output.log"
+          $errFile = "$playitDir\playit_err.log"
+
+          if (-not (Test-Path $playitExe)) {
+              Write-Error "playit.exe not found. Download step failed."
+              exit 1
+          }
+
+          if (Test-Path $logFile) { Remove-Item $logFile -Force }
+          if (Test-Path $errFile) { Remove-Item $errFile -Force }
+
+          Write-Host "Starting playit agent in foreground (stdout mode)..."
+          $proc = Start-Process -FilePath $playitExe -ArgumentList "--stdout" -WorkingDirectory $playitDir -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru
+
+          $claimUrl = $null
+          for ($i = 0; $i -lt 12; $i++) {
+              Start-Sleep -Seconds 5
+              if (Test-Path $logFile) {
+                  $content = Get-Content $logFile -Raw
+                  if ($content -match "https://playit\.gg/claim/[A-Za-z0-9]+") {
+                      $claimUrl = $Matches[0]
+                      break
+                  }
               }
+              Write-Host "Waiting for claim URL... ($($i+1)/12)"
+          }
+
+          if ($claimUrl) {
+              Write-Host "`n==============================================="
+              Write-Host "PLAYIT.GG CLAIM URL:"
+              Write-Host $claimUrl
+              Write-Host "===============================================`n"
+              Write-Host "Open the URL above, claim the agent, create a TCP tunnel for port 3389,"
+              Write-Host "and use the given host:port in Remote Desktop."
           } else {
-              Write-Host "No log file yet. The claim URL should appear in the playit.exe console window."
-              Write-Host "If you cannot see it, the agent may need to be run interactively once."
+              Write-Warning "Claim URL not found in log within 60 seconds."
+              Write-Host "--- Last 30 lines of playit output ---"
+              if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
+              if (Test-Path $errFile) { Get-Content $errFile -Tail 30 }
+              Write-Host "The agent may still be starting. Check the log file manually: $logFile"
           }
 
       - name: Keep Alive
