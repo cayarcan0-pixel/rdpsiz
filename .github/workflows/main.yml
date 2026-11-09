@@ -41,33 +41,43 @@ jobs:
           }
 
           Write-Host "Authenticating ngrok..."
-          & $ngrokPath authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
+          & $ngrokPath config add-authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
           
           Write-Host "Starting TCP Tunnel..."
           Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
           
-          Start-Sleep -Seconds 15
-          
-          try {
-              $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 10
-              $publicUrl = $response.tunnels[0].public_url
-              
-              if ($publicUrl -match "tcp://(.+)") {
-                  $rdpAddress = $Matches[1]
-                  
-                  Write-Host "`n==============================================="
-                  Write-Host "🚀 RDP BAĞLANTI BİLGİLERİ"
-                  Write-Host "Adres (Computer): $rdpAddress"
-                  Write-Host "Kullanıcı Adı: RDP"
-                  Write-Host "Şifre: TechZoner@001"
-                  Write-Host "===============================================\n"
-              } else {
-                  Write-Error "Tünel adresi alınamadı. API yanıtı: $publicUrl"
-                  exit 1
+          $maxRetries = 12
+          $retryCount = 0
+          $publicUrl = $null
+          while ($retryCount -lt $maxRetries -and -not $publicUrl) {
+              Start-Sleep -Seconds 5
+              try {
+                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
+                  if ($response.tunnels.Count -gt 0) {
+                      $publicUrl = $response.tunnels[0].public_url
+                  }
+              } catch {
+                  Write-Host "API not ready yet, retrying... ($($retryCount + 1)/$maxRetries)"
               }
-          } catch {
-              Write-Error "Ngrok API'sine bağlanılamadı. Tünel başlamamış olabilir."
-              Write-Host "Hata: $_"
+              $retryCount++
+          }
+
+          if (-not $publicUrl) {
+              Write-Error "Could not reach ngrok API within 60 seconds. Tunnel may not have started."
+              exit 1
+          }
+
+          if ($publicUrl -match "tcp://(.+)") {
+              $rdpAddress = $Matches[1]
+              
+              Write-Host "`n==============================================="
+              Write-Host "🚀 RDP CONNECTION INFO"
+              Write-Host "Address (Computer): $rdpAddress"
+              Write-Host "Username: RDP"
+              Write-Host "Password: TechZoner@001"
+              Write-Host "===============================================\n"
+          } else {
+              Write-Error "Unexpected tunnel URL format: $publicUrl"
               exit 1
           }
 
