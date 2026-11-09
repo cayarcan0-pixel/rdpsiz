@@ -43,19 +43,17 @@ jobs:
           Write-Host "Authenticating ngrok..."
           & $ngrokPath authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
           
-          Write-Host "Starting TCP Tunnel with Logging..."
-          # Ngrok'u log dosyası yazacak şekilde arka planda başlatıyoruz
-          Start-Process $ngrokPath -ArgumentList "tcp 3389 --log=ngrok.log" -WindowStyle Hidden
+          Write-Host "Starting TCP Tunnel..."
+          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
           
-          # Ngrok'un tüneli açması ve log yazması için 20 saniye bekliyoruz
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 15
           
-          # Tünel adresini yerel API hatasına düşmemek için doğrudan log dosyasından çekiyoruz
-          if (Test-Path "ngrok.log") {
-              $logContent = Get-Content "ngrok.log" -Raw
-              if ($logContent -match "url=(tcp://[^\s]+)") {
-                  $publicUrl = $Matches[1]
-                  $rdpAddress = $publicUrl -replace "tcp://", ""
+          try {
+              $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 10
+              $publicUrl = $response.tunnels[0].public_url
+              
+              if ($publicUrl -match "tcp://(.+)") {
+                  $rdpAddress = $Matches[1]
                   
                   Write-Host "`n==============================================="
                   Write-Host "🚀 RDP BAĞLANTI BİLGİLERİ"
@@ -64,13 +62,12 @@ jobs:
                   Write-Host "Şifre: TechZoner@001"
                   Write-Host "===============================================\n"
               } else {
-                  Write-Error "Ngrok baslatildi fakat log dosyasinda tünel adresi bulunamadi!"
-                  Write-Host "--- NGROK LOGLARI ---"
-                  Write-Host $logContent
+                  Write-Error "Tünel adresi alınamadı. API yanıtı: $publicUrl"
                   exit 1
               }
-          } else {
-              Write-Error "ngrok.log dosyasi olusturulamadi! Ngrok arka planda calismiyor olabilir."
+          } catch {
+              Write-Error "Ngrok API'sine bağlanılamadı. Tünel başlamamış olabilir."
+              Write-Host "Hata: $_"
               exit 1
           }
 
