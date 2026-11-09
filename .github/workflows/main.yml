@@ -1,4 +1,4 @@
-name: win 11 bore rdp
+name: win 11 serveo rdp
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-2022
-    timeout-minutes: 350
+    timeout-minutes: 350 # 6 saate kadar açık kalır
 
     steps:
       - name: Enable RDP
@@ -25,64 +25,48 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Download bore
+      - name: Start Serveo TCP Tunnel
         shell: powershell
         run: |
-          $boreDir = "C:\bore"
-          New-Item -ItemType Directory -Path $boreDir -Force | Out-Null
-          $zipPath = "$boreDir\bore.zip"
-          
-          Write-Host "Downloading bore..."
-          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile $zipPath -UseBasicParsing
-          
-          Expand-Archive -Path $zipPath -DestinationPath $boreDir -Force
-          $boreExe = Get-ChildItem -Path $boreDir -Recurse -Filter "bore.exe" | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "bore.exe found at: $boreExe"
-          
-          $boreExe | Out-File -FilePath "$boreDir\bore_path.txt" -Encoding utf8
-
-      - name: Start bore Tunnel
-        shell: powershell
-        run: |
-          $boreDir = "C:\bore"
-          $boreExe = (Get-Content "$boreDir\bore_path.txt" -Raw).Trim()
-          $logFile = "$boreDir\bore_out.log"
-          
+          $logFile = "C:\serveo_out.log"
           if (Test-Path $logFile) { Remove-Item $logFile -Force }
           
-          Write-Host "Starting bore tunnel for RDP..."
-          # bore çıktısını log dosyasına yönlendiriyoruz
-          Start-Process -FilePath $boreExe -ArgumentList "local 3389 --to bore.pub" -WorkingDirectory $boreDir -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError "$boreDir\bore_err.log"
+          Write-Host "Starting Serveo TCP tunnel for RDP (port 3389)..."
+          # Serveo'ya TCP tüneli için bağlan. Çıktıyı log dosyasına yaz.
+          # Windows'ta 'ssh' komutu varsayılan olarak gelir.
+          $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net" -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError "C:\serveo_err.log" -PassThru
           
-          # Çıktının oturması için bekle
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           
+          Write-Host "`n--- Serveo Output ---"
+          if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
+          if (Test-Path "C:\serveo_err.log") { Get-Content "C:\serveo_err.log" -Tail 30 }
+          
+          # Loglardan public adresi çek (Serveo genelde "Forwarding TCP connect to localhost:3389" ve bir adres basar)
           $publicAddress = $null
           if (Test-Path $logFile) {
               $content = Get-Content $logFile -Raw
-              # Çıktıda bore.pub:PORT formatını ara
-              if ($content -match "bore\.pub:(\d+)") {
-                  $publicAddress = "bore.pub:$($Matches[1])"
+              # Serveo çıktısında genellikle "serveo.net:PORT" şeklinde bir adres olur
+              if ($content -match "serveo\.net:(\d+)") {
+                  $publicAddress = "serveo.net:$($Matches[1])"
               }
           }
           
           if ($publicAddress) {
               Write-Host "`n==============================================="
-              Write-Host "🚀 RDP CONNECTION INFO (via bore)"
+              Write-Host "🚀 RDP CONNECTION INFO (via Serveo)"
               Write-Host "Address (Computer): $publicAddress"
               Write-Host "Username: RDP"
               Write-Host "Password: TechZoner@001"
               Write-Host "===============================================`n"
           } else {
-              Write-Warning "Could not find bore.pub address in log. Check the log below:"
-              if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
-              if (Test-Path "$boreDir\bore_err.log") { Get-Content "$boreDir\bore_err.log" -Tail 30 }
-              Write-Host "You may need to try again; bore.pub can be crowded sometimes."
+              Write-Warning "Could not parse Serveo address. Check the logs above. The SSH process might still be connecting."
+              Write-Host "If you see 'Warning: Permanently added...' that is normal."
           }
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via bore..."
+              Write-Host "[$(Get-Date)] RDP Active via Serveo..."
               Start-Sleep -Seconds 300
           }
