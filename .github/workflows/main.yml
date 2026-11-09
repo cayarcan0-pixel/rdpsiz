@@ -1,4 +1,4 @@
-name: win 11 frp rdp
+name: win 11 proxvn rdp
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Enable RDP
+      - name: Enable RDP on Port 3389
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
@@ -25,69 +25,44 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Download frp Client
+      - name: Download ProxVN Tunnel
         shell: powershell
         run: |
-          $frpDir = "C:\frp"
-          New-Item -ItemType Directory -Path $frpDir -Force | Out-Null
-          $zipPath = "$frpDir\frp.zip"
-          
-          Write-Host "Downloading frp..."
-          Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.64.0/frp_0.64.0_windows_amd64.zip" -OutFile $zipPath -UseBasicParsing
-          
-          Expand-Archive -Path $zipPath -DestinationPath $frpDir -Force
-          $frpcPath = Get-ChildItem -Path $frpDir -Recurse -Filter "frpc.exe" | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "frpc.exe found at: $frpcPath"
-          
-          $frpcPath | Out-File -FilePath "$frpDir\frpc_path.txt" -Encoding utf8
+          $dir = "C:\proxvn"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $exe = "$dir\proxvn.exe"
+          # GitHub releases'den Windows binary'sini çek (Projede genelde doğrudan link olur, yoksa build edilir ama hazır binary olduğunu varsayıyoruz)
+          # Eğer bu link çalışmazsa, repo releases sayfasından doğrudan link alınabilir.
+          Invoke-WebRequest -Uri "https://github.com/hoangtuvungcao/proxvn_tunnel_full/releases/latest/download/proxvn-windows-amd64.exe" -OutFile $exe -UseBasicParsing
+          Write-Host "ProxVN downloaded to $exe"
 
-      - name: Start frp Tunnel (Foreground with Logs)
+      - name: Start ProxVN Tunnel for RDP
         shell: powershell
         run: |
-          $frpDir = "C:\frp"
-          $frpcPath = (Get-Content "$frpDir\frpc_path.txt" -Raw).Trim()
+          $dir = "C:\proxvn"
+          $exe = "$dir\proxvn.exe"
           
-          # remotePort'u 50001 olarak değiştirdik, çakışma olursa 50002, 50003 dene
-          $configContent = @"
-          serverAddr = "frp3.chuantou.org"
-          serverPort = 7000
-          auth.token = "www.chuantou.org"
-          
-          [[proxies]]
-          name = "github-rdp"
-          type = "tcp"
-          localIP = "127.0.0.1"
-          localPort = 3389
-          remotePort = 50001
-          "@
-          
-          $configPath = "$frpDir\frpc.toml"
-          $configContent | Out-File -FilePath $configPath -Encoding utf8
-          
-          Write-Host "Starting frpc tunnel in foreground to see logs..."
-          Write-Host "Waiting 15 seconds for connection..."
-          
-          # Ön planda başlatıp çıktıyı yakalıyoruz
-          $proc = Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -NoNewWindow -PassThru -RedirectStandardOutput "$frpDir\frpc_out.log" -RedirectStandardError "$frpDir\frpc_err.log"
+          Write-Host "Starting ProxVN tunnel for RDP (port 3389)..."
+          # --proto tcp 3389 çalıştırıp çıktıyı log dosyasına alıyoruz
+          Start-Process -FilePath $exe -ArgumentList "--proto tcp 3389" -WorkingDirectory $dir -NoNewWindow -RedirectStandardOutput "$dir\out.log" -RedirectStandardError "$dir\err.log"
           
           Start-Sleep -Seconds 15
           
-          Write-Host "--- frpc stdout ---"
-          if (Test-Path "$frpDir\frpc_out.log") { Get-Content "$frpDir\frpc_out.log" -Tail 30 }
-          Write-Host "--- frpc stderr ---"
-          if (Test-Path "$frpDir\frpc_err.log") { Get-Content "$frpDir\frpc_err.log" -Tail 30 }
+          Write-Host "`n--- ProxVN Output ---"
+          if (Test-Path "$dir\out.log") { Get-Content "$dir\out.log" }
+          if (Test-Path "$dir\err.log") { Get-Content "$dir\err.log" }
+          Write-Host "--------------------`n"
           
-          Write-Host "`n==============================================="
-          Write-Host "🚀 RDP CONNECTION INFO (via frp)"
-          Write-Host "Address (Computer): frp3.chuantou.org:50001"
+          Write-Host "==============================================="
+          Write-Host "🚀 RDP CONNECTION INFO"
+          Write-Host "Address (Computer): Check the 'Public Address' line above (e.g., 103.77.246.196:12345)"
           Write-Host "Username: RDP"
           Write-Host "Password: TechZoner@001"
-          Write-Host "===============================================`n"
-          Write-Host "If connection fails, check frpc logs above. The port 50001 might be busy too. Try 50002, 50003."
+          Write-Host "==============================================="
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via frp..."
+              Write-Host "[$(Get-Date)] RDP Active via ProxVN..."
               Start-Sleep -Seconds 300
           }
