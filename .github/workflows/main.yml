@@ -1,4 +1,4 @@
-name: Win11 Serveo RDP Debug
+name: Win11 Bore RDP Long
 
 on:
   workflow_dispatch:
@@ -11,197 +11,180 @@ jobs:
     steps:
       - name: Enable RDP
         run: |
-          Write-Host "=== Enabling RDP ==="
+          Write-Host "=== 1. Enabling RDP ==="
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          # RDP servisinin çalıştığını doğrula
-          $rdpService = Get-Service -Name TermService
-          Write-Host "TermService Status: $($rdpService.Status)"
-          
-          if ($rdpService.Status -ne "Running") {
+
+          $svc = Get-Service TermService
+          Write-Host "TermService Status: $($svc.Status)"
+          if ($svc.Status -ne "Running") {
               Start-Service TermService
+              Start-Sleep -Seconds 2
               Write-Host "TermService started"
           }
-          
-          Write-Host "RDP Enabled successfully"
+          Write-Host "RDP Enabled"
 
       - name: Create RDP User
         run: |
-          Write-Host "=== Creating RDP User ==="
+          Write-Host "=== 2. Creating User ==="
           $password = "TechZoner@001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
+
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Write-Host "User already exists, updating password..."
               Set-LocalUser -Name "RDP" -Password $securePass
+              Write-Host "User RDP already exists → password updated"
           } else {
               New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
               Write-Host "User RDP created"
           }
-          
+
           Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          
-          Get-LocalUser -Name "RDP" | Format-Table Name, Enabled, PasswordExpires
-          Write-Host "User setup completed"
 
-      - name: Check OpenSSH Client
-        run: |
-          Write-Host "=== Checking OpenSSH ==="
-          $sshPath = (Get-Command ssh -ErrorAction SilentlyContinue).Source
-          if ($sshPath) {
-              Write-Host "SSH found at: $sshPath"
-              ssh -V 2>&1
-          } else {
-              Write-Host "ERROR: SSH not found!"
-              exit 1
-          }
+          Get-LocalUser -Name "RDP" | Format-Table Name, Enabled
+          Write-Host "User setup done"
 
-      - name: Start Serveo Tunnel (Detailed)
+      - name: Download & Start Bore Tunnel
         shell: powershell
         run: |
-          Write-Host "=== Starting Serveo Tunnel ==="
+          Write-Host "=== 3. Downloading Bore ==="
           
-          $logOut = "C:\serveo_out.log"
-          $logErr = "C:\serveo_err.log"
+          $boreDir = "C:\bore"
+          New-Item -ItemType Directory -Path $boreDir -Force | Out-Null
           
-          # Eski logları temizle
+          $zipPath = "$boreDir\bore.zip"
+          $boreExe = "$boreDir\bore.exe"
+          
+          Write-Host "Downloading bore v0.6.0..."
+          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile $zipPath -UseBasicParsing
+          
+          Write-Host "Extracting..."
+          Expand-Archive -Path $zipPath -DestinationPath $boreDir -Force
+          
+          if (-not (Test-Path $boreExe)) {
+              Write-Host "ERROR: bore.exe not found after extract!"
+              Get-ChildItem $boreDir -Recurse | Format-Table
+              exit 1
+          }
+          
+          Write-Host "bore.exe ready: $boreExe"
+          & $boreExe --version
+          
+          Write-Host ""
+          Write-Host "=== 4. Starting Bore Tunnel ==="
+          
+          $logOut = "$boreDir\bore_out.log"
+          $logErr = "$boreDir\bore_err.log"
+          
           if (Test-Path $logOut) { Remove-Item $logOut -Force }
           if (Test-Path $logErr) { Remove-Item $logErr -Force }
           
-          Write-Host "Launching SSH process..."
+          # Bore'u arka planda başlat
+          $process = Start-Process -FilePath $boreExe `
+              -ArgumentList "local","3389","--to","bore.pub" `
+              -WorkingDirectory $boreDir `
+              -RedirectStandardOutput $logOut `
+              -RedirectStandardError $logErr `
+              -NoNewWindow `
+              -PassThru
           
-          $psi = New-Object System.Diagnostics.ProcessStartInfo
-          $psi.FileName = "ssh"
-          $psi.Arguments = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -o ServerAliveCountMax=5 -o ExitOnForwardFailure=yes -R 0:localhost:3389 serveo.net"
-          $psi.RedirectStandardOutput = $true
-          $psi.RedirectStandardError = $true
-          $psi.UseShellExecute = $false
-          $psi.CreateNoWindow = $true
-          
-          $process = New-Object System.Diagnostics.Process
-          $process.StartInfo = $psi
-          
-          # Output'u anlık yakala
-          $outBuilder = New-Object System.Text.StringBuilder
-          $errBuilder = New-Object System.Text.StringBuilder
-          
-          $outEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
-              if ($EventArgs.Data) {
-                  $Event.MessageData.AppendLine($EventArgs.Data)
-                  Write-Host "[SSH OUT] $($EventArgs.Data)"
-              }
-          } -MessageData $outBuilder
-          
-          $errEvent = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
-              if ($EventArgs.Data) {
-                  $Event.MessageData.AppendLine($EventArgs.Data)
-                  Write-Host "[SSH ERR] $($EventArgs.Data)"
-              }
-          } -MessageData $errBuilder
-          
-          $process.Start() | Out-Null
-          $process.BeginOutputReadLine()
-          $process.BeginErrorReadLine()
-          
-          Write-Host "SSH process started. PID: $($process.Id)"
-          Write-Host "Waiting for Serveo response (max 25 seconds)..."
+          Write-Host "Bore process started. PID: $($process.Id)"
+          Write-Host "Waiting for public address (max 30 seconds)..."
           
           $publicAddress = $null
           $success = $false
           
-          for ($i = 1; $i -le 25; $i++) {
+          for ($i = 1; $i -le 30; $i++) {
               Start-Sleep -Seconds 1
               
-              $currentOut = $outBuilder.ToString()
-              $currentErr = $errBuilder.ToString()
-              $combined = $currentOut + "`n" + $currentErr
+              $outContent = ""
+              $errContent = ""
               
-              # Serveo'nun verdiği adresleri ara
-              if ($combined -match "Forwarding TCP connections from\s+([^\s]+)") {
+              if (Test-Path $logOut) { $outContent = Get-Content $logOut -Raw -ErrorAction SilentlyContinue }
+              if (Test-Path $logErr) { $errContent = Get-Content $logErr -Raw -ErrorAction SilentlyContinue }
+              
+              $combined = "$outContent`n$errContent"
+              
+              # Adres yakalama
+              if ($combined -match "bore\.pub:(\d+)") {
+                  $publicAddress = "bore.pub:$($Matches[1])"
+                  $success = $true
+                  Write-Host "FOUND → $publicAddress"
+                  break
+              }
+              
+              if ($combined -match "listening at\s+([^\s]+)") {
                   $publicAddress = $Matches[1]
                   $success = $true
-                  Write-Host "FOUND: $publicAddress"
+                  Write-Host "FOUND → $publicAddress"
                   break
-              }
-              if ($combined -match "serveousercontent\.com:(\d+)") {
-                  $publicAddress = "serveousercontent.com:$($Matches[1])"
-                  $success = $true
-                  Write-Host "FOUND: $publicAddress"
-                  break
-              }
-              if ($combined -match "serveo\.net:(\d+)") {
-                  $publicAddress = "serveo.net:$($Matches[1])"
-                  $success = $true
-                  Write-Host "FOUND: $publicAddress"
-                  break
-              }
-              if ($combined -match "Allocated port (\d+)") {
-                  Write-Host "Port allocated: $($Matches[1])"
               }
               
-              # Process öldü mü kontrol et
+              # Process öldü mü?
               if ($process.HasExited) {
-                  Write-Host "ERROR: SSH process exited early! Exit code: $($process.ExitCode)"
+                  Write-Host "ERROR: Bore process exited early! ExitCode: $($process.ExitCode)"
                   break
               }
               
-              Write-Host "Waiting... ($i/25)"
+              Write-Host "Waiting... ($i/30)"
           }
           
-          # Logları dosyaya yaz
-          $outBuilder.ToString() | Out-File $logOut -Encoding utf8
-          $errBuilder.ToString() | Out-File $logErr -Encoding utf8
-          
           Write-Host ""
-          Write-Host "========== FULL SSH OUTPUT =========="
-          Write-Host $outBuilder.ToString()
-          Write-Host "========== FULL SSH ERROR =========="
-          Write-Host $errBuilder.ToString()
-          Write-Host "====================================="
+          Write-Host "========== BORE STDOUT =========="
+          if (Test-Path $logOut) { Get-Content $logOut } else { Write-Host "(empty)" }
+          Write-Host "========== BORE STDERR =========="
+          if (Test-Path $logErr) { Get-Content $logErr } else { Write-Host "(empty)" }
+          Write-Host "================================="
           Write-Host ""
           
           if ($success -and $publicAddress) {
               Write-Host "==============================================="
-              Write-Host "RDP CONNECTION INFO (via Serveo)"
+              Write-Host "RDP CONNECTION INFO (via bore)"
               Write-Host "==============================================="
               Write-Host "Address (Computer): $publicAddress"
-              Write-Host "Username: RDP"
-              Write-Host "Password: TechZoner@001"
+              Write-Host "Username:           RDP"
+              Write-Host "Password:           TechZoner@001"
               Write-Host "==============================================="
               Write-Host ""
-              Write-Host "Tunnel process is running (PID: $($process.Id))"
+              Write-Host "Tunnel appears to be UP (PID: $($process.Id))"
           } else {
-              Write-Host "FAILED TO GET PUBLIC ADDRESS"
-              Write-Host "SSH process running: $(-not $process.HasExited)"
+              Write-Host "==============================================="
+              Write-Host "FAILED - Could not get public address"
+              Write-Host "==============================================="
+              Write-Host "Process still running: $(-not $process.HasExited)"
               if ($process.HasExited) {
                   Write-Host "Exit code: $($process.ExitCode)"
               }
           }
-          
-          # Process'i arka planda tutmak için job olarak sakla
-          # (Keep Alive adımında yaşaması için)
-          $global:ServeoProcess = $process
 
-      - name: Keep Alive + Tunnel Monitor
+      - name: Keep Alive + Monitor
         run: |
-          Write-Host "=== Keep Alive Started ==="
-          Write-Host "Monitoring tunnel every 60 seconds..."
+          Write-Host "=== 5. Keep Alive + Tunnel Monitor ==="
+          Write-Host "Will run until job timeout (~6 hours)"
+          Write-Host ""
           
           $counter = 0
           while ($true) {
               $counter++
               $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
               
-              # SSH process hala yaşıyor mu?
-              $sshProcs = Get-Process -Name ssh -ErrorAction SilentlyContinue
+              $boreProcs = Get-Process -Name "bore" -ErrorAction SilentlyContinue
               
-              if ($sshProcs) {
-                  Write-Host "[$time] Tunnel ACTIVE | SSH processes: $($sshProcs.Count) | Cycle: $counter"
+              if ($boreProcs) {
+                  Write-Host "[$time] Tunnel ACTIVE | bore processes: $($boreProcs.Count) | cycle: $counter"
               } else {
-                  Write-Host "[$time] WARNING: No SSH process found! Tunnel may be dead."
+                  Write-Host "[$time] WARNING: bore process NOT FOUND - tunnel may be dead | cycle: $counter"
+              }
+              
+              # Her 5 dakikada bir logun sonunu da bas
+              if ($counter % 5 -eq 0) {
+                  $logOut = "C:\bore\bore_out.log"
+                  $logErr = "C:\bore\bore_err.log"
+                  Write-Host "--- Last log lines ---"
+                  if (Test-Path $logOut) { Get-Content $logOut -Tail 5 }
+                  if (Test-Path $logErr) { Get-Content $logErr -Tail 5 }
+                  Write-Host "----------------------"
               }
               
               Start-Sleep -Seconds 60
