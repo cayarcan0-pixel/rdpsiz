@@ -32,16 +32,30 @@ jobs:
       - name: Install and Start ngrok Tunnel
         shell: powershell
         run: |
-          # Download ngrok
-          Invoke-WebRequest -Uri "https://equinox.io" -OutFile "ngrok.zip"
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "."
+          # Force TLS 1.2 and download ngrok reliably
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $tsUrl = "https://equinox.io"
+          
+          Write-Host "Downloading ngrok..."
+          # Using WebClient for better stability in GitHub Actions
+          $webClient = New-Object System.Net.WebClient
+          $webClient.DownloadFile($tsUrl, "ngrok.zip")
+          
+          # Verify if file downloaded correctly
+          if (-not (Test-Path "ngrok.zip") -or (Get-Item "ngrok.zip").Length -lt 10000) {
+              Write-Host "Retrying download with Invoke-WebRequest..."
+              Invoke-WebRequest -Uri $tsUrl -OutFile "ngrok.zip" -UseBasicParsing
+          }
+
+          Write-Host "Extracting ngrok..."
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "." -Force
           
           # Authenticate ngrok using your token directly
           .\ngrok.exe authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
           
           # Start TCP tunnel on RDP port 3389
-          Start-Process .\ngrok.exe -ArgumentList "tcp 3389"
-          Start-Sleep -Seconds 10
+          Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
+          Start-Sleep -Seconds 12
           
           # Fetch the public URL from ngrok local API
           $ngrokApi = Invoke-RestMethod http://localhost:4040/api/tunnels
