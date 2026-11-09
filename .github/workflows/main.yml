@@ -1,4 +1,4 @@
-name: win 11 ngrok rdp
+name: win 11 frp rdp
 
 on:
   workflow_dispatch:
@@ -25,61 +25,63 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Install and Start ngrok Tunnel
+      - name: Download frp Client
         shell: powershell
         run: |
-          Write-Host "Installing ngrok via Chocolatey..."
-          choco install ngrok --no-progress -y
+          $frpDir = "C:\frp"
+          New-Item -ItemType Directory -Path $frpDir -Force | Out-Null
+          $zipPath = "$frpDir\frp.zip"
           
-          $ngrokPath = "C:\ProgramData\chocolatey\bin\ngrok.exe"
-          if (-not (Test-Path $ngrokPath)) {
-              $ngrokPath = "ngrok"
-          }
-
-          Write-Host "Authenticating ngrok..."
-          & $ngrokPath config add-authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
+          Write-Host "Downloading frp..."
+          Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.64.0/frp_0.64.0_windows_amd64.zip" -OutFile $zipPath -UseBasicParsing
           
-          Write-Host "Starting TCP Tunnel..."
-          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
+          Expand-Archive -Path $zipPath -DestinationPath $frpDir -Force
+          $frpcPath = Get-ChildItem -Path $frpDir -Recurse -Filter "frpc.exe" | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "frpc.exe found at: $frpcPath"
           
-          $maxRetries = 12
-          $retryCount = 0
-          $publicUrl = $null
-          while ($retryCount -lt $maxRetries -and -not $publicUrl) {
-              Start-Sleep -Seconds 5
-              try {
-                  $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($response.tunnels.Count -gt 0) {
-                      $publicUrl = $response.tunnels[0].public_url
-                  }
-              } catch {
-                  Write-Host "API not ready yet, retrying... ($($retryCount + 1)/$maxRetries)"
-              }
-              $retryCount++
-          }
+          # frpc yolunu bir sonraki adım için kaydet
+          $frpcPath | Out-File -FilePath "$frpDir\frpc_path.txt" -Encoding utf8
 
-          if (-not $publicUrl) {
-              Write-Error "Could not reach ngrok API within 60 seconds. Tunnel may not have started."
-              exit 1
-          }
-
-          if ($publicUrl -match "tcp://(.+)") {
-              $rdpAddress = $Matches[1]
-              
-              Write-Host "`n==============================================="
-              Write-Host "🚀 RDP CONNECTION INFO"
-              Write-Host "Address (Computer): $rdpAddress"
-              Write-Host "Username: RDP"
-              Write-Host "Password: TechZoner@001"
-              Write-Host "===============================================`n"
-          } else {
-              Write-Error "Unexpected tunnel URL format: $publicUrl"
-              exit 1
-          }
+      - name: Start frp Tunnel
+        shell: powershell
+        run: |
+          $frpDir = "C:\frp"
+          $frpcPath = Get-Content "$frpDir\frpc_path.txt" -Raw
+          $frpcPath = $frpcPath.Trim()
+          
+          # frpc yapılandırma dosyası (TOML)
+          $configContent = @"
+          serverAddr = "frp3.chuantou.org"
+          serverPort = 7000
+          auth.token = "www.chuantou.org"
+          
+          [[proxies]]
+          name = "github-rdp"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 3389
+          remotePort = 50000
+          "@
+          
+          $configPath = "$frpDir\frpc.toml"
+          $configContent | Out-File -FilePath $configPath -Encoding utf8
+          
+          Write-Host "Starting frpc tunnel..."
+          Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -WindowStyle Hidden
+          
+          Start-Sleep -Seconds 10
+          
+          Write-Host "`n==============================================="
+          Write-Host "🚀 RDP CONNECTION INFO (via frp)"
+          Write-Host "Address (Computer): frp3.chuantou.org:50000"
+          Write-Host "Username: RDP"
+          Write-Host "Password: TechZoner@001"
+          Write-Host "===============================================`n"
+          Write-Host "Note: If port 50000 is busy, change 'remotePort' in the config above to another number (e.g., 50001) and rerun."
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via ngrok..."
+              Write-Host "[$(Get-Date)] RDP Active via frp..."
               Start-Sleep -Seconds 300
           }
