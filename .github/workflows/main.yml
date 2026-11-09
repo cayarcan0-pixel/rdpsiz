@@ -33,10 +33,8 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Installing ngrok via Chocolatey..."
-          # Choco kullanarak ngrok'u indirme hatası olmadan resmi kaynaktan kuruyoruz
           choco install ngrok --no-progress -y
           
-          # ngrok.exe'nin yüklendiği varsayılan yolu environment'a ekleyelim veya doğrudan çalıştıralım
           $ngrokPath = "C:\ProgramData\chocolatey\bin\ngrok.exe"
           if (-not (Test-Path $ngrokPath)) {
               $ngrokPath = "ngrok"
@@ -45,23 +43,36 @@ jobs:
           Write-Host "Authenticating ngrok..."
           & $ngrokPath authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
           
-          Write-Host "Starting TCP Tunnel..."
-          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 15
+          Write-Host "Starting TCP Tunnel with Logging..."
+          # Ngrok'u log dosyası yazacak şekilde arka planda başlatıyoruz
+          Start-Process $ngrokPath -ArgumentList "tcp 3389 --log=ngrok.log" -WindowStyle Hidden
           
-          # Fetch the public URL from ngrok local API
-          $ngrokApi = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $publicUrl = $ngrokApi.tunnels.public_url
+          # Ngrok'un tüneli açması ve log yazması için 20 saniye bekliyoruz
+          Start-Sleep -Seconds 20
           
-          # Clean the tcp:// prefix for RDP client
-          $rdpAddress = $publicUrl -replace "tcp://", ""
-          
-          Write-Host "`n==============================================="
-          Write-Host "🚀 RDP BAĞLANTI BİLGİLERİ"
-          Write-Host "Adres (Computer): $rdpAddress"
-          Write-Host "Kullanıcı Adı: RDP"
-          Write-Host "Şifre: TechZoner@001"
-          Write-Host "===============================================\n"
+          # Tünel adresini yerel API hatasına düşmemek için doğrudan log dosyasından çekiyoruz
+          if (Test-Path "ngrok.log") {
+              $logContent = Get-Content "ngrok.log" -Raw
+              if ($logContent -match "url=(tcp://[^\s]+)") {
+                  $publicUrl = $Matches[1]
+                  $rdpAddress = $publicUrl -replace "tcp://", ""
+                  
+                  Write-Host "`n==============================================="
+                  Write-Host "🚀 RDP BAĞLANTI BİLGİLERİ"
+                  Write-Host "Adres (Computer): $rdpAddress"
+                  Write-Host "Kullanıcı Adı: RDP"
+                  Write-Host "Şifre: TechZoner@001"
+                  Write-Host "===============================================\n"
+              } else {
+                  Write-Error "Ngrok baslatildi fakat log dosyasinda tünel adresi bulunamadi!"
+                  Write-Host "--- NGROK LOGLARI ---"
+                  Write-Host $logContent
+                  exit 1
+              }
+          } else {
+              Write-Error "ngrok.log dosyasi olusturulamadi! Ngrok arka planda calismiyor olabilir."
+              exit 1
+          }
 
       - name: Maintain Connection + Watch RDP User
         run: |
