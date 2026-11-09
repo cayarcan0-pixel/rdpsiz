@@ -21,18 +21,18 @@ jobs:
           Write-Host "RDP Enabled"
 
           Write-Host "=== 2. Creating User ==="
-          $password = "TechZoner@001"
+          $password = "MAZERUNNER-2027"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Set-LocalUser -Name "RDP" -Password $securePass
+          if (Get-LocalUser -Name "SHACOV" -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name "SHACOV" -Password $securePass
           } else {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+              New-LocalUser -Name "SHACOV" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
           }
 
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          Write-Host "User RDP ready"
+          Add-LocalGroupMember -Group "Administrators" -Member "SHACOV" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "SHACOV" -ErrorAction SilentlyContinue
+          Write-Host "User SHACOV ready"
 
       - name: Download Bore + Start Tunnel + Keep Alive
         shell: powershell
@@ -90,7 +90,7 @@ jobs:
               
               if ($combined -match "bore\.pub:(\d+)") {
                   $publicAddress = "bore.pub:$($Matches[1])"
-                  Write-Host "FOUND → $publicAddress"
+                  Write-Host "FOUND -> $publicAddress"
                   break
               }
               
@@ -115,8 +115,8 @@ jobs:
               Write-Host "RDP CONNECTION INFO (via bore)"
               Write-Host "==============================================="
               Write-Host "Address (Computer): $publicAddress"
-              Write-Host "Username:           RDP"
-              Write-Host "Password:           TechZoner@001"
+              Write-Host "Username:           SHACOV"
+              Write-Host "Password:           MAZERUNNER-2027"
               Write-Host "==============================================="
               Write-Host ""
               Write-Host "Tunnel is UP. Starting Keep Alive..."
@@ -126,7 +126,7 @@ jobs:
               exit 1
           }
           
-          # ========== KEEP ALIVE (aynı step içinde) ==========
+          # ========== KEEP ALIVE (same step) ==========
           Write-Host ""
           Write-Host "=== 5. Keep Alive + Monitor (same step) ==="
           
@@ -135,7 +135,7 @@ jobs:
               $counter++
               $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
               
-              # Process hala yaşıyor mu?
+              # Is the process still alive?
               if ($process.HasExited) {
                   Write-Host "[$time] CRITICAL: Bore process DIED! ExitCode: $($process.ExitCode)"
                   Write-Host "Trying to restart..."
@@ -154,7 +154,7 @@ jobs:
                   Write-Host "[$time] Tunnel ACTIVE | PID: $($process.Id) | cycle: $counter"
               }
               
-              # Her 5 dakikada logun sonunu bas
+              # Print the end of the log every 5 minutes
               if ($counter % 5 -eq 0) {
                   Write-Host "--- Last log lines ---"
                   if (Test-Path $logOut) { Get-Content $logOut -Tail 8 }
