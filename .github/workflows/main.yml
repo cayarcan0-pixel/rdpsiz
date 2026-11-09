@@ -32,28 +32,21 @@ jobs:
       - name: Install and Start ngrok Tunnel
         shell: powershell
         run: |
-          # Force TLS 1.2 and download ngrok reliably
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $tsUrl = "https://equinox.io"
+          Write-Host "Installing ngrok via Chocolatey..."
+          # Choco kullanarak ngrok'u indirme hatası olmadan resmi kaynaktan kuruyoruz
+          choco install ngrok --no-progress -y
           
-          Write-Host "Downloading ngrok..."
-          $webClient = New-Object System.Net.WebClient
-          $webClient.DownloadFile($tsUrl, "ngrok.zip")
-          
-          # Verify if file downloaded correctly
-          if (-not (Test-Path "ngrok.zip") -or (Get-Item "ngrok.zip").Length -lt 10000) {
-              Write-Host "Retrying download with Invoke-WebRequest..."
-              Invoke-WebRequest -Uri $tsUrl -OutFile "ngrok.zip" -UseBasicParsing
+          # ngrok.exe'nin yüklendiği varsayılan yolu environment'a ekleyelim veya doğrudan çalıştıralım
+          $ngrokPath = "C:\ProgramData\chocolatey\bin\ngrok.exe"
+          if (-not (Test-Path $ngrokPath)) {
+              $ngrokPath = "ngrok"
           }
 
-          Write-Host "Extracting ngrok..."
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "." -Force
+          Write-Host "Authenticating ngrok..."
+          & $ngrokPath authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
           
-          # Authenticate ngrok using your token directly
-          .\ngrok.exe authtoken "3GAmkQyZ4aTDXmW8gL8bAYj5fD3_7U3pzSH4fnHg4ReB2pfiB"
-          
-          # Start TCP tunnel on RDP port 3389
-          Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
+          Write-Host "Starting TCP Tunnel..."
+          Start-Process $ngrokPath -ArgumentList "tcp 3389" -WindowStyle Hidden
           Start-Sleep -Seconds 15
           
           # Fetch the public URL from ngrok local API
