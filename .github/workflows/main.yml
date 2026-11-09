@@ -1,4 +1,4 @@
-name: Win11 Serveo RDP
+name: Win11 Serveo RDP Debug
 
 on:
   workflow_dispatch:
@@ -11,84 +11,198 @@ jobs:
     steps:
       - name: Enable RDP
         run: |
+          Write-Host "=== Enabling RDP ==="
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "RDP Enabled"
+          
+          # RDP servisinin çalıştığını doğrula
+          $rdpService = Get-Service -Name TermService
+          Write-Host "TermService Status: $($rdpService.Status)"
+          
+          if ($rdpService.Status -ne "Running") {
+              Start-Service TermService
+              Write-Host "TermService started"
+          }
+          
+          Write-Host "RDP Enabled successfully"
 
       - name: Create RDP User
         run: |
+          Write-Host "=== Creating RDP User ==="
           $password = "TechZoner@001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
-          } else {
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Write-Host "User already exists, updating password..."
               Set-LocalUser -Name "RDP" -Password $securePass
+          } else {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+              Write-Host "User RDP created"
           }
           
           Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          Write-Host "User RDP created / updated"
+          
+          Get-LocalUser -Name "RDP" | Format-Table Name, Enabled, PasswordExpires
+          Write-Host "User setup completed"
 
-      - name: Start Serveo Tunnel
+      - name: Check OpenSSH Client
+        run: |
+          Write-Host "=== Checking OpenSSH ==="
+          $sshPath = (Get-Command ssh -ErrorAction SilentlyContinue).Source
+          if ($sshPath) {
+              Write-Host "SSH found at: $sshPath"
+              ssh -V 2>&1
+          } else {
+              Write-Host "ERROR: SSH not found!"
+              exit 1
+          }
+
+      - name: Start Serveo Tunnel (Detailed)
         shell: powershell
         run: |
-          Write-Host "Starting Serveo tunnel..."
+          Write-Host "=== Starting Serveo Tunnel ==="
           
-          # Serveo tunnel'ı arka planda başlat
-          $process = Start-Process -FilePath "ssh" -ArgumentList @(
-              "-o", "StrictHostKeyChecking=no",
-              "-o", "ServerAliveInterval=30",
-              "-o", "ServerAliveCountMax=3",
-              "-R", "0:localhost:3389",
-              "serveo.net"
-          ) -NoNewWindow -PassThru -RedirectStandardOutput "serveo_out.log" -RedirectStandardError "serveo_err.log"
+          $logOut = "C:\serveo_out.log"
+          $logErr = "C:\serveo_err.log"
           
-          # Adresin çıkmasını bekle
-          Start-Sleep -Seconds 8
+          # Eski logları temizle
+          if (Test-Path $logOut) { Remove-Item $logOut -Force }
+          if (Test-Path $logErr) { Remove-Item $logErr -Force }
+          
+          Write-Host "Launching SSH process..."
+          
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "ssh"
+          $psi.Arguments = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=20 -o ServerAliveCountMax=5 -o ExitOnForwardFailure=yes -R 0:localhost:3389 serveo.net"
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          
+          $process = New-Object System.Diagnostics.Process
+          $process.StartInfo = $psi
+          
+          # Output'u anlık yakala
+          $outBuilder = New-Object System.Text.StringBuilder
+          $errBuilder = New-Object System.Text.StringBuilder
+          
+          $outEvent = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action {
+              if ($EventArgs.Data) {
+                  $Event.MessageData.AppendLine($EventArgs.Data)
+                  Write-Host "[SSH OUT] $($EventArgs.Data)"
+              }
+          } -MessageData $outBuilder
+          
+          $errEvent = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action {
+              if ($EventArgs.Data) {
+                  $Event.MessageData.AppendLine($EventArgs.Data)
+                  Write-Host "[SSH ERR] $($EventArgs.Data)"
+              }
+          } -MessageData $errBuilder
+          
+          $process.Start() | Out-Null
+          $process.BeginOutputReadLine()
+          $process.BeginErrorReadLine()
+          
+          Write-Host "SSH process started. PID: $($process.Id)"
+          Write-Host "Waiting for Serveo response (max 25 seconds)..."
           
           $publicAddress = $null
-          $maxTries = 15
+          $success = $false
           
-          for ($i = 1; $i -le $maxTries; $i++) {
-              if (Test-Path "serveo_out.log") {
-                  $content = Get-Content "serveo_out.log" -Raw
-                  
-                  # Serveo'nun verdiği portu yakala
-                  if ($content -match "serveo\.net:(\d+)") {
-                      $publicAddress = "serveo.net:$($Matches[1])"
-                      break
-                  }
-                  if ($content -match "Forwarding TCP connections from ([^\s]+)") {
-                      $publicAddress = $Matches[1]
-                      break
-                  }
+          for ($i = 1; $i -le 25; $i++) {
+              Start-Sleep -Seconds 1
+              
+              $currentOut = $outBuilder.ToString()
+              $currentErr = $errBuilder.ToString()
+              $combined = $currentOut + "`n" + $currentErr
+              
+              # Serveo'nun verdiği adresleri ara
+              if ($combined -match "Forwarding TCP connections from\s+([^\s]+)") {
+                  $publicAddress = $Matches[1]
+                  $success = $true
+                  Write-Host "FOUND: $publicAddress"
+                  break
               }
-              Start-Sleep -Seconds 2
+              if ($combined -match "serveousercontent\.com:(\d+)") {
+                  $publicAddress = "serveousercontent.com:$($Matches[1])"
+                  $success = $true
+                  Write-Host "FOUND: $publicAddress"
+                  break
+              }
+              if ($combined -match "serveo\.net:(\d+)") {
+                  $publicAddress = "serveo.net:$($Matches[1])"
+                  $success = $true
+                  Write-Host "FOUND: $publicAddress"
+                  break
+              }
+              if ($combined -match "Allocated port (\d+)") {
+                  Write-Host "Port allocated: $($Matches[1])"
+              }
+              
+              # Process öldü mü kontrol et
+              if ($process.HasExited) {
+                  Write-Host "ERROR: SSH process exited early! Exit code: $($process.ExitCode)"
+                  break
+              }
+              
+              Write-Host "Waiting... ($i/25)"
           }
           
-          Write-Host ""
-          Write-Host "==============================================="
-          Write-Host "RDP CONNECTION INFO (via Serveo)"
-          Write-Host "==============================================="
+          # Logları dosyaya yaz
+          $outBuilder.ToString() | Out-File $logOut -Encoding utf8
+          $errBuilder.ToString() | Out-File $logErr -Encoding utf8
           
-          if ($publicAddress) {
+          Write-Host ""
+          Write-Host "========== FULL SSH OUTPUT =========="
+          Write-Host $outBuilder.ToString()
+          Write-Host "========== FULL SSH ERROR =========="
+          Write-Host $errBuilder.ToString()
+          Write-Host "====================================="
+          Write-Host ""
+          
+          if ($success -and $publicAddress) {
+              Write-Host "==============================================="
+              Write-Host "RDP CONNECTION INFO (via Serveo)"
+              Write-Host "==============================================="
               Write-Host "Address (Computer): $publicAddress"
+              Write-Host "Username: RDP"
+              Write-Host "Password: TechZoner@001"
+              Write-Host "==============================================="
+              Write-Host ""
+              Write-Host "Tunnel process is running (PID: $($process.Id))"
           } else {
-              Write-Host "Address bulunamadı. Log'a bak:"
-              if (Test-Path "serveo_out.log") { Get-Content "serveo_out.log" }
-              if (Test-Path "serveo_err.log") { Get-Content "serveo_err.log" }
+              Write-Host "FAILED TO GET PUBLIC ADDRESS"
+              Write-Host "SSH process running: $(-not $process.HasExited)"
+              if ($process.HasExited) {
+                  Write-Host "Exit code: $($process.ExitCode)"
+              }
           }
           
-          Write-Host "Username: RDP"
-          Write-Host "Password: TechZoner@001"
-          Write-Host "==============================================="
-          Write-Host ""
+          # Process'i arka planda tutmak için job olarak sakla
+          # (Keep Alive adımında yaşaması için)
+          $global:ServeoProcess = $process
 
-      - name: Keep Alive
+      - name: Keep Alive + Tunnel Monitor
         run: |
+          Write-Host "=== Keep Alive Started ==="
+          Write-Host "Monitoring tunnel every 60 seconds..."
+          
+          $counter = 0
           while ($true) {
-              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP Active via Serveo..."
-              Start-Sleep -Seconds 300
+              $counter++
+              $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              
+              # SSH process hala yaşıyor mu?
+              $sshProcs = Get-Process -Name ssh -ErrorAction SilentlyContinue
+              
+              if ($sshProcs) {
+                  Write-Host "[$time] Tunnel ACTIVE | SSH processes: $($sshProcs.Count) | Cycle: $counter"
+              } else {
+                  Write-Host "[$time] WARNING: No SSH process found! Tunnel may be dead."
+              }
+              
+              Start-Sleep -Seconds 60
           }
