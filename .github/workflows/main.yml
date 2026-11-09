@@ -37,7 +37,6 @@ jobs:
           $tsUrl = "https://equinox.io"
           
           Write-Host "Downloading ngrok..."
-          # Using WebClient for better stability in GitHub Actions
           $webClient = New-Object System.Net.WebClient
           $webClient.DownloadFile($tsUrl, "ngrok.zip")
           
@@ -55,7 +54,7 @@ jobs:
           
           # Start TCP tunnel on RDP port 3389
           Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 12
+          Start-Sleep -Seconds 15
           
           # Fetch the public URL from ngrok local API
           $ngrokApi = Invoke-RestMethod http://localhost:4040/api/tunnels
