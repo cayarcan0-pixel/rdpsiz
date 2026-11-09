@@ -1,4 +1,4 @@
-name: win 11 proxvn rdp
+name: win 11 bore rdp
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Enable RDP on Port 3389
+      - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
@@ -25,44 +25,64 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Download ProxVN Tunnel
+      - name: Download bore
         shell: powershell
         run: |
-          $dir = "C:\proxvn"
-          New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $exe = "$dir\proxvn.exe"
-          # GitHub releases'den Windows binary'sini çek (Projede genelde doğrudan link olur, yoksa build edilir ama hazır binary olduğunu varsayıyoruz)
-          # Eğer bu link çalışmazsa, repo releases sayfasından doğrudan link alınabilir.
-          Invoke-WebRequest -Uri "https://github.com/hoangtuvungcao/proxvn_tunnel_full/releases/latest/download/proxvn-windows-amd64.exe" -OutFile $exe -UseBasicParsing
-          Write-Host "ProxVN downloaded to $exe"
+          $boreDir = "C:\bore"
+          New-Item -ItemType Directory -Path $boreDir -Force | Out-Null
+          $zipPath = "$boreDir\bore.zip"
+          
+          Write-Host "Downloading bore..."
+          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile $zipPath -UseBasicParsing
+          
+          Expand-Archive -Path $zipPath -DestinationPath $boreDir -Force
+          $boreExe = Get-ChildItem -Path $boreDir -Recurse -Filter "bore.exe" | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "bore.exe found at: $boreExe"
+          
+          $boreExe | Out-File -FilePath "$boreDir\bore_path.txt" -Encoding utf8
 
-      - name: Start ProxVN Tunnel for RDP
+      - name: Start bore Tunnel
         shell: powershell
         run: |
-          $dir = "C:\proxvn"
-          $exe = "$dir\proxvn.exe"
+          $boreDir = "C:\bore"
+          $boreExe = (Get-Content "$boreDir\bore_path.txt" -Raw).Trim()
+          $logFile = "$boreDir\bore_out.log"
           
-          Write-Host "Starting ProxVN tunnel for RDP (port 3389)..."
-          # --proto tcp 3389 çalıştırıp çıktıyı log dosyasına alıyoruz
-          Start-Process -FilePath $exe -ArgumentList "--proto tcp 3389" -WorkingDirectory $dir -NoNewWindow -RedirectStandardOutput "$dir\out.log" -RedirectStandardError "$dir\err.log"
+          if (Test-Path $logFile) { Remove-Item $logFile -Force }
           
-          Start-Sleep -Seconds 15
+          Write-Host "Starting bore tunnel for RDP..."
+          # bore çıktısını log dosyasına yönlendiriyoruz
+          Start-Process -FilePath $boreExe -ArgumentList "local 3389 --to bore.pub" -WorkingDirectory $boreDir -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError "$boreDir\bore_err.log"
           
-          Write-Host "`n--- ProxVN Output ---"
-          if (Test-Path "$dir\out.log") { Get-Content "$dir\out.log" }
-          if (Test-Path "$dir\err.log") { Get-Content "$dir\err.log" }
-          Write-Host "--------------------`n"
+          # Çıktının oturması için bekle
+          Start-Sleep -Seconds 10
           
-          Write-Host "==============================================="
-          Write-Host "🚀 RDP CONNECTION INFO"
-          Write-Host "Address (Computer): Check the 'Public Address' line above (e.g., 103.77.246.196:12345)"
-          Write-Host "Username: RDP"
-          Write-Host "Password: TechZoner@001"
-          Write-Host "==============================================="
+          $publicAddress = $null
+          if (Test-Path $logFile) {
+              $content = Get-Content $logFile -Raw
+              # Çıktıda bore.pub:PORT formatını ara
+              if ($content -match "bore\.pub:(\d+)") {
+                  $publicAddress = "bore.pub:$($Matches[1])"
+              }
+          }
+          
+          if ($publicAddress) {
+              Write-Host "`n==============================================="
+              Write-Host "🚀 RDP CONNECTION INFO (via bore)"
+              Write-Host "Address (Computer): $publicAddress"
+              Write-Host "Username: RDP"
+              Write-Host "Password: TechZoner@001"
+              Write-Host "===============================================`n"
+          } else {
+              Write-Warning "Could not find bore.pub address in log. Check the log below:"
+              if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
+              if (Test-Path "$boreDir\bore_err.log") { Get-Content "$boreDir\bore_err.log" -Tail 30 }
+              Write-Host "You may need to try again; bore.pub can be crowded sometimes."
+          }
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via ProxVN..."
+              Write-Host "[$(Get-Date)] RDP Active via bore..."
               Start-Sleep -Seconds 300
           }
