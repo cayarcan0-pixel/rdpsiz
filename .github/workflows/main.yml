@@ -39,17 +39,15 @@ jobs:
           $frpcPath = Get-ChildItem -Path $frpDir -Recurse -Filter "frpc.exe" | Select-Object -First 1 -ExpandProperty FullName
           Write-Host "frpc.exe found at: $frpcPath"
           
-          # frpc yolunu bir sonraki adım için kaydet
           $frpcPath | Out-File -FilePath "$frpDir\frpc_path.txt" -Encoding utf8
 
-      - name: Start frp Tunnel
+      - name: Start frp Tunnel (Foreground with Logs)
         shell: powershell
         run: |
           $frpDir = "C:\frp"
-          $frpcPath = Get-Content "$frpDir\frpc_path.txt" -Raw
-          $frpcPath = $frpcPath.Trim()
+          $frpcPath = (Get-Content "$frpDir\frpc_path.txt" -Raw).Trim()
           
-          # frpc yapılandırma dosyası (TOML)
+          # remotePort'u 50001 olarak değiştirdik, çakışma olursa 50002, 50003 dene
           $configContent = @"
           serverAddr = "frp3.chuantou.org"
           serverPort = 7000
@@ -60,24 +58,32 @@ jobs:
           type = "tcp"
           localIP = "127.0.0.1"
           localPort = 3389
-          remotePort = 50000
+          remotePort = 50001
           "@
           
           $configPath = "$frpDir\frpc.toml"
           $configContent | Out-File -FilePath $configPath -Encoding utf8
           
-          Write-Host "Starting frpc tunnel..."
-          Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -WindowStyle Hidden
+          Write-Host "Starting frpc tunnel in foreground to see logs..."
+          Write-Host "Waiting 15 seconds for connection..."
           
-          Start-Sleep -Seconds 10
+          # Ön planda başlatıp çıktıyı yakalıyoruz
+          $proc = Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -NoNewWindow -PassThru -RedirectStandardOutput "$frpDir\frpc_out.log" -RedirectStandardError "$frpDir\frpc_err.log"
+          
+          Start-Sleep -Seconds 15
+          
+          Write-Host "--- frpc stdout ---"
+          if (Test-Path "$frpDir\frpc_out.log") { Get-Content "$frpDir\frpc_out.log" -Tail 30 }
+          Write-Host "--- frpc stderr ---"
+          if (Test-Path "$frpDir\frpc_err.log") { Get-Content "$frpDir\frpc_err.log" -Tail 30 }
           
           Write-Host "`n==============================================="
           Write-Host "🚀 RDP CONNECTION INFO (via frp)"
-          Write-Host "Address (Computer): frp3.chuantou.org:50000"
+          Write-Host "Address (Computer): frp3.chuantou.org:50001"
           Write-Host "Username: RDP"
           Write-Host "Password: TechZoner@001"
           Write-Host "===============================================`n"
-          Write-Host "Note: If port 50000 is busy, change 'remotePort' in the config above to another number (e.g., 50001) and rerun."
+          Write-Host "If connection fails, check frpc logs above. The port 50001 might be busy too. Try 50002, 50003."
 
       - name: Keep Alive
         run: |
