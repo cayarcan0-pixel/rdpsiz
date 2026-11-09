@@ -1,4 +1,4 @@
-name: win 11 serveo rdp
+name: win 11 unlimited frpee rdp
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-2022
-    timeout-minutes: 350 # 6 saate kadar açık kalır
+    timeout-minutes: 350
 
     steps:
       - name: Enable RDP
@@ -25,48 +25,58 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-      - name: Start Serveo TCP Tunnel
+      - name: Download frp Client
         shell: powershell
         run: |
-          $logFile = "C:\serveo_out.log"
-          if (Test-Path $logFile) { Remove-Item $logFile -Force }
+          $frpDir = "C:\frp"
+          New-Item -ItemType Directory -Path $frpDir -Force | Out-Null
+          $zipPath = "$frpDir\frp.zip"
+          Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.64.0/frp_0.64.0_windows_amd64.zip" -OutFile $zipPath -UseBasicParsing
+          Expand-Archive -Path $zipPath -DestinationPath $frpDir -Force
+          $frpcPath = Get-ChildItem -Path $frpDir -Recurse -Filter "frpc.exe" | Select-Object -First 1 -ExpandProperty FullName
+          $frpcPath | Out-File -FilePath "$frpDir\frpc_path.txt" -Encoding utf8
+
+      - name: Start Unlimited frpee Tunnel
+        shell: powershell
+        run: |
+          $frpDir = "C:\frp"
+          $frpcPath = (Get-Content "$frpDir\frpc_path.txt" -Raw).Trim()
           
-          Write-Host "Starting Serveo TCP tunnel for RDP (port 3389)..."
-          # Serveo'ya TCP tüneli için bağlan. Çıktıyı log dosyasına yaz.
-          # Windows'ta 'ssh' komutu varsayılan olarak gelir.
-          $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net" -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError "C:\serveo_err.log" -PassThru
+          # Rastgele bir uzak port seçiyoruz (10000 - 65000 arası)
+          $remotePort = Get-Random -Minimum 10000 -Maximum 65000
           
-          Start-Sleep -Seconds 15
+          $configContent = @"
+          serverAddr = "free.frpee.com"
+          serverPort = 7000
+          auth.method = "token"
+          auth.token = "free.frpee.com"
+
+          [[proxies]]
+          name = "rdp-tunnel"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 3389
+          remotePort = $remotePort
+          "@
           
-          Write-Host "`n--- Serveo Output ---"
-          if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
-          if (Test-Path "C:\serveo_err.log") { Get-Content "C:\serveo_err.log" -Tail 30 }
+          $configPath = "$frpDir\frpc.toml"
+          $configContent | Out-File -FilePath $configPath -Encoding utf8
           
-          # Loglardan public adresi çek (Serveo genelde "Forwarding TCP connect to localhost:3389" ve bir adres basar)
-          $publicAddress = $null
-          if (Test-Path $logFile) {
-              $content = Get-Content $logFile -Raw
-              # Serveo çıktısında genellikle "serveo.net:PORT" şeklinde bir adres olur
-              if ($content -match "serveo\.net:(\d+)") {
-                  $publicAddress = "serveo.net:$($Matches[1])"
-              }
-          }
+          Write-Host "Starting frpc tunnel to frpee.com..."
+          Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -WindowStyle Hidden
           
-          if ($publicAddress) {
-              Write-Host "`n==============================================="
-              Write-Host "🚀 RDP CONNECTION INFO (via Serveo)"
-              Write-Host "Address (Computer): $publicAddress"
-              Write-Host "Username: RDP"
-              Write-Host "Password: TechZoner@001"
-              Write-Host "===============================================`n"
-          } else {
-              Write-Warning "Could not parse Serveo address. Check the logs above. The SSH process might still be connecting."
-              Write-Host "If you see 'Warning: Permanently added...' that is normal."
-          }
+          Start-Sleep -Seconds 10
+          
+          Write-Host "`n==============================================="
+          Write-Host "🚀 SINIRSIZ RDP CONNECTION INFO (via frpee)"
+          Write-Host "Address (Computer): free.frpee.com:$remotePort"
+          Write-Host "Username: RDP"
+          Write-Host "Password: TechZoner@001"
+          Write-Host "===============================================`n"
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via Serveo..."
+              Write-Host "[$(Get-Date)] RDP Active via frpee (No Time Limit)..."
               Start-Sleep -Seconds 300
           }
