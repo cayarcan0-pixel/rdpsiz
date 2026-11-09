@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Enable RDP
+      - name: Enable RDP + Create User
         run: |
           Write-Host "=== 1. Enabling RDP ==="
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -17,35 +17,24 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
           $svc = Get-Service TermService
-          Write-Host "TermService Status: $($svc.Status)"
-          if ($svc.Status -ne "Running") {
-              Start-Service TermService
-              Start-Sleep -Seconds 2
-              Write-Host "TermService started"
-          }
+          if ($svc.Status -ne "Running") { Start-Service TermService }
           Write-Host "RDP Enabled"
 
-      - name: Create RDP User
-        run: |
           Write-Host "=== 2. Creating User ==="
           $password = "TechZoner@001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Set-LocalUser -Name "RDP" -Password $securePass
-              Write-Host "User RDP already exists → password updated"
           } else {
               New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
-              Write-Host "User RDP created"
           }
 
           Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+          Write-Host "User RDP ready"
 
-          Get-LocalUser -Name "RDP" | Format-Table Name, Enabled
-          Write-Host "User setup done"
-
-      - name: Download & Start Bore Tunnel
+      - name: Download Bore + Start Tunnel + Keep Alive
         shell: powershell
         run: |
           Write-Host "=== 3. Downloading Bore ==="
@@ -56,19 +45,16 @@ jobs:
           $zipPath = "$boreDir\bore.zip"
           $boreExe = "$boreDir\bore.exe"
           
-          Write-Host "Downloading bore v0.6.0..."
           Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile $zipPath -UseBasicParsing
-          
-          Write-Host "Extracting..."
           Expand-Archive -Path $zipPath -DestinationPath $boreDir -Force
           
           if (-not (Test-Path $boreExe)) {
-              Write-Host "ERROR: bore.exe not found after extract!"
-              Get-ChildItem $boreDir -Recurse | Format-Table
+              Write-Host "ERROR: bore.exe not found!"
+              Get-ChildItem $boreDir -Recurse
               exit 1
           }
           
-          Write-Host "bore.exe ready: $boreExe"
+          Write-Host "bore.exe ready"
           & $boreExe --version
           
           Write-Host ""
@@ -80,7 +66,6 @@ jobs:
           if (Test-Path $logOut) { Remove-Item $logOut -Force }
           if (Test-Path $logErr) { Remove-Item $logErr -Force }
           
-          # Bore'u arka planda başlat
           $process = Start-Process -FilePath $boreExe `
               -ArgumentList "local","3389","--to","bore.pub" `
               -WorkingDirectory $boreDir `
@@ -89,41 +74,28 @@ jobs:
               -NoNewWindow `
               -PassThru
           
-          Write-Host "Bore process started. PID: $($process.Id)"
-          Write-Host "Waiting for public address (max 30 seconds)..."
+          Write-Host "Bore started. PID: $($process.Id)"
+          Write-Host "Waiting for public address..."
           
           $publicAddress = $null
-          $success = $false
           
           for ($i = 1; $i -le 30; $i++) {
               Start-Sleep -Seconds 1
               
               $outContent = ""
               $errContent = ""
-              
               if (Test-Path $logOut) { $outContent = Get-Content $logOut -Raw -ErrorAction SilentlyContinue }
               if (Test-Path $logErr) { $errContent = Get-Content $logErr -Raw -ErrorAction SilentlyContinue }
-              
               $combined = "$outContent`n$errContent"
               
-              # Adres yakalama
               if ($combined -match "bore\.pub:(\d+)") {
                   $publicAddress = "bore.pub:$($Matches[1])"
-                  $success = $true
                   Write-Host "FOUND → $publicAddress"
                   break
               }
               
-              if ($combined -match "listening at\s+([^\s]+)") {
-                  $publicAddress = $Matches[1]
-                  $success = $true
-                  Write-Host "FOUND → $publicAddress"
-                  break
-              }
-              
-              # Process öldü mü?
               if ($process.HasExited) {
-                  Write-Host "ERROR: Bore process exited early! ExitCode: $($process.ExitCode)"
+                  Write-Host "ERROR: Bore exited early! ExitCode: $($process.ExitCode)"
                   break
               }
               
@@ -138,7 +110,7 @@ jobs:
           Write-Host "================================="
           Write-Host ""
           
-          if ($success -and $publicAddress) {
+          if ($publicAddress) {
               Write-Host "==============================================="
               Write-Host "RDP CONNECTION INFO (via bore)"
               Write-Host "==============================================="
@@ -147,42 +119,45 @@ jobs:
               Write-Host "Password:           TechZoner@001"
               Write-Host "==============================================="
               Write-Host ""
-              Write-Host "Tunnel appears to be UP (PID: $($process.Id))"
+              Write-Host "Tunnel is UP. Starting Keep Alive..."
           } else {
-              Write-Host "==============================================="
               Write-Host "FAILED - Could not get public address"
-              Write-Host "==============================================="
-              Write-Host "Process still running: $(-not $process.HasExited)"
-              if ($process.HasExited) {
-                  Write-Host "Exit code: $($process.ExitCode)"
-              }
+              Write-Host "Process running: $(-not $process.HasExited)"
+              exit 1
           }
-
-      - name: Keep Alive + Monitor
-        run: |
-          Write-Host "=== 5. Keep Alive + Tunnel Monitor ==="
-          Write-Host "Will run until job timeout (~6 hours)"
+          
+          # ========== KEEP ALIVE (aynı step içinde) ==========
           Write-Host ""
+          Write-Host "=== 5. Keep Alive + Monitor (same step) ==="
           
           $counter = 0
           while ($true) {
               $counter++
               $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
               
-              $boreProcs = Get-Process -Name "bore" -ErrorAction SilentlyContinue
-              
-              if ($boreProcs) {
-                  Write-Host "[$time] Tunnel ACTIVE | bore processes: $($boreProcs.Count) | cycle: $counter"
+              # Process hala yaşıyor mu?
+              if ($process.HasExited) {
+                  Write-Host "[$time] CRITICAL: Bore process DIED! ExitCode: $($process.ExitCode)"
+                  Write-Host "Trying to restart..."
+                  
+                  $process = Start-Process -FilePath $boreExe `
+                      -ArgumentList "local","3389","--to","bore.pub" `
+                      -WorkingDirectory $boreDir `
+                      -RedirectStandardOutput $logOut `
+                      -RedirectStandardError $logErr `
+                      -NoNewWindow `
+                      -PassThru
+                  
+                  Start-Sleep -Seconds 5
+                  Write-Host "Restarted. New PID: $($process.Id)"
               } else {
-                  Write-Host "[$time] WARNING: bore process NOT FOUND - tunnel may be dead | cycle: $counter"
+                  Write-Host "[$time] Tunnel ACTIVE | PID: $($process.Id) | cycle: $counter"
               }
               
-              # Her 5 dakikada bir logun sonunu da bas
+              # Her 5 dakikada logun sonunu bas
               if ($counter % 5 -eq 0) {
-                  $logOut = "C:\bore\bore_out.log"
-                  $logErr = "C:\bore\bore_err.log"
                   Write-Host "--- Last log lines ---"
-                  if (Test-Path $logOut) { Get-Content $logOut -Tail 5 }
+                  if (Test-Path $logOut) { Get-Content $logOut -Tail 8 }
                   if (Test-Path $logErr) { Get-Content $logErr -Tail 5 }
                   Write-Host "----------------------"
               }
