@@ -1,10 +1,10 @@
-name: win 11 unlimited frpee rdp
+name: Win11 Serveo RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  rdp:
     runs-on: windows-2022
     timeout-minutes: 350
 
@@ -12,71 +12,83 @@ jobs:
       - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "RDP Enabled"
 
       - name: Create RDP User
         run: |
           $password = "TechZoner@001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+          } else {
+              Set-LocalUser -Name "RDP" -Password $securePass
           }
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+          Write-Host "User RDP created / updated"
 
-      - name: Download frp Client
+      - name: Start Serveo Tunnel
         shell: powershell
         run: |
-          $frpDir = "C:\frp"
-          New-Item -ItemType Directory -Path $frpDir -Force | Out-Null
-          $zipPath = "$frpDir\frp.zip"
-          Invoke-WebRequest -Uri "https://github.com/fatedier/frp/releases/download/v0.64.0/frp_0.64.0_windows_amd64.zip" -OutFile $zipPath -UseBasicParsing
-          Expand-Archive -Path $zipPath -DestinationPath $frpDir -Force
-          $frpcPath = Get-ChildItem -Path $frpDir -Recurse -Filter "frpc.exe" | Select-Object -First 1 -ExpandProperty FullName
-          $frpcPath | Out-File -FilePath "$frpDir\frpc_path.txt" -Encoding utf8
-
-      - name: Start Unlimited frpee Tunnel
-        shell: powershell
-        run: |
-          $frpDir = "C:\frp"
-          $frpcPath = (Get-Content "$frpDir\frpc_path.txt" -Raw).Trim()
+          Write-Host "Starting Serveo tunnel..."
           
-          # Rastgele bir uzak port seçiyoruz (10000 - 65000 arası)
-          $remotePort = Get-Random -Minimum 10000 -Maximum 65000
+          # Serveo tunnel'ı arka planda başlat
+          $process = Start-Process -FilePath "ssh" -ArgumentList @(
+              "-o", "StrictHostKeyChecking=no",
+              "-o", "ServerAliveInterval=30",
+              "-o", "ServerAliveCountMax=3",
+              "-R", "0:localhost:3389",
+              "serveo.net"
+          ) -NoNewWindow -PassThru -RedirectStandardOutput "serveo_out.log" -RedirectStandardError "serveo_err.log"
           
-          $configContent = @"
-          serverAddr = "free.frpee.com"
-          serverPort = 7000
-          auth.method = "token"
-          auth.token = "free.frpee.com"
-
-          [[proxies]]
-          name = "rdp-tunnel"
-          type = "tcp"
-          localIP = "127.0.0.1"
-          localPort = 3389
-          remotePort = $remotePort
-          "@
+          # Adresin çıkmasını bekle
+          Start-Sleep -Seconds 8
           
-          $configPath = "$frpDir\frpc.toml"
-          $configContent | Out-File -FilePath $configPath -Encoding utf8
+          $publicAddress = $null
+          $maxTries = 15
           
-          Write-Host "Starting frpc tunnel to frpee.com..."
-          Start-Process -FilePath $frpcPath -ArgumentList "-c", $configPath -WindowStyle Hidden
+          for ($i = 1; $i -le $maxTries; $i++) {
+              if (Test-Path "serveo_out.log") {
+                  $content = Get-Content "serveo_out.log" -Raw
+                  
+                  # Serveo'nun verdiği portu yakala
+                  if ($content -match "serveo\.net:(\d+)") {
+                      $publicAddress = "serveo.net:$($Matches[1])"
+                      break
+                  }
+                  if ($content -match "Forwarding TCP connections from ([^\s]+)") {
+                      $publicAddress = $Matches[1]
+                      break
+                  }
+              }
+              Start-Sleep -Seconds 2
+          }
           
-          Start-Sleep -Seconds 10
+          Write-Host ""
+          Write-Host "==============================================="
+          Write-Host "RDP CONNECTION INFO (via Serveo)"
+          Write-Host "==============================================="
           
-          Write-Host "`n==============================================="
-          Write-Host "🚀 SINIRSIZ RDP CONNECTION INFO (via frpee)"
-          Write-Host "Address (Computer): free.frpee.com:$remotePort"
+          if ($publicAddress) {
+              Write-Host "Address (Computer): $publicAddress"
+          } else {
+              Write-Host "Address bulunamadı. Log'a bak:"
+              if (Test-Path "serveo_out.log") { Get-Content "serveo_out.log" }
+              if (Test-Path "serveo_err.log") { Get-Content "serveo_err.log" }
+          }
+          
           Write-Host "Username: RDP"
           Write-Host "Password: TechZoner@001"
-          Write-Host "===============================================`n"
+          Write-Host "==============================================="
+          Write-Host ""
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active via frpee (No Time Limit)..."
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP Active via Serveo..."
               Start-Sleep -Seconds 300
           }
